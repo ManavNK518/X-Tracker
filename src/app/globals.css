@@ -1,0 +1,159 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens. Dark is the default; [data-theme="light"] overrides.
+ * Utilities reference the variables (bg-bg, text-fg, border-line, text-accent…).
+ */
+:root {
+  --bg: #0b0d10;
+  --surface: #111419;
+  --elevated: #171b21;
+  --hover: #1c2129;
+  --line: #292f38;
+  --line-subtle: #1d2229;
+  --fg: #f4f5f7;
+  --fg-2: #9aa3af;
+  --fg-3: #6b7280;
+  --accent: #e879a9;
+  --accent-soft: rgba(232, 121, 169, 0.12);
+  --accent-line: rgba(232, 121, 169, 0.45);
+  --positive: #4fb286;
+  --positive-soft: rgba(79, 178, 134, 0.12);
+  --negative: #e0605a;
+  --negative-soft: rgba(224, 96, 90, 0.12);
+  --warning: #d6a23e;
+  --warning-soft: rgba(214, 162, 62, 0.12);
+  --info: #7aa2d6;
+  --info-soft: rgba(122, 162, 214, 0.12);
+  --scrollbar: #2b313a;
+  /* Chart series (validated with the dataviz palette validator against #111419). */
+  --chart-1: #5a8dee;
+  --chart-2: #d9609a;
+  --chart-grid: #1f242b;
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --elevated: #ffffff;
+  --hover: #f0f2f5;
+  --line: #dde1e7;
+  --line-subtle: #eceef2;
+  --fg: #111419;
+  --fg-2: #4b5563;
+  --fg-3: #6b7280;
+  --accent: #c2477f;
+  --accent-soft: rgba(194, 71, 127, 0.1);
+  --accent-line: rgba(194, 71, 127, 0.45);
+  --positive: #1f8a5b;
+  --positive-soft: rgba(31, 138, 91, 0.1);
+  --negative: #c23b35;
+  --negative-soft: rgba(194, 59, 53, 0.1);
+  --warning: #a8741a;
+  --warning-soft: rgba(168, 116, 26, 0.1);
+  --info: #3d6aa8;
+  --info-soft: rgba(61, 106, 168, 0.1);
+  --scrollbar: #c9ced6;
+  /* Chart series (validated against #ffffff). */
+  --chart-1: #3a6fe0;
+  --chart-2: #c8457e;
+  --chart-grid: #eceef2;
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-elevated: var(--elevated);
+  --color-hover: var(--hover);
+  --color-line: var(--line);
+  --color-line-subtle: var(--line-subtle);
+  --color-fg: var(--fg);
+  --color-fg-2: var(--fg-2);
+  --color-fg-3: var(--fg-3);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-line: var(--accent-line);
+  --color-positive: var(--positive);
+  --color-positive-soft: var(--positive-soft);
+  --color-negative: var(--negative);
+  --color-negative-soft: var(--negative-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-mono,
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+
+/* Long feeds: let the browser skip layout/paint for off-screen rows. */
+.feed-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 112px;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@keyframes row-in {
+  from {
+    background: var(--accent-soft);
+  }
+  to {
+    background: transparent;
+  }
+}
+.row-new {
+  animation: row-in 2.4s ease-out 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot,
+  .row-new {
+    animation: none;
+  }
+}
