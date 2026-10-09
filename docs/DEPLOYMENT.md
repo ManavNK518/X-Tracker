@@ -36,7 +36,7 @@ Serverless hosts (e.g. Vercel functions) do not keep a long-running in-process w
 - [ ] `APP_URL` uses https (enables `Secure` cookies)
 - [ ] Secrets set in the platform's secret manager, not committed
 - [ ] Only one worker running
-- [ ] X sources enabled deliberately, with `X_MAX_POST_READS_PER_DAY` set to your budget
+- [ ] X sources enabled deliberately, with `X_MAX_DAILY_COST_USD` and `X_MAX_POST_READS_PER_DAY` set to your budget
 - [ ] AI budget limits set (`MAX_AI_ANALYSES_PER_DAY`, `MAX_AI_DAILY_COST_USD`)
 - [ ] `SEC_USER_AGENT` set if you want sec.gov feeds
 - [ ] Notification channels tested from Settings → Notifications

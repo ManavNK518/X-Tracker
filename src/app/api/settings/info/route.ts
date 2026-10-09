@@ -23,7 +23,7 @@ export const GET = api({ auth: "user" }, async ({ env }) => {
         id: "x",
         name: "X API v2",
         configured: integ.x,
-        cost: "Paid: pay-per-use credits (about $0.005 per post read and $0.010 per user read at the time of writing). Bounded by X_MAX_POST_READS_PER_DAY.",
+        cost: "Paid: pay-per-use credits (about $0.005 per post read and $0.010 per user read at the time of writing). Bounded by X_MAX_DAILY_COST_USD and X_MAX_POST_READS_PER_DAY.",
         requires: ["X_BEARER_TOKEN (app-only Bearer token from the X Developer Console)", "Enable individual X sources on the Sources screen"],
       },
       {
@@ -49,6 +49,8 @@ export const GET = api({ auth: "user" }, async ({ env }) => {
       maxPostsPerInterval: env.MAX_POSTS_PER_INTERVAL,
       maxSourceQueriesPerHour: env.MAX_SOURCE_QUERIES_PER_HOUR,
       xMaxPostReadsPerDay: env.X_MAX_POST_READS_PER_DAY,
+      xMaxDailyCostUsd: env.X_MAX_DAILY_COST_USD,
+      xKeywordRuleBudgetShare: env.X_KEYWORD_RULE_BUDGET_SHARE,
       maxNotificationsPerHour: env.MAX_NOTIFICATIONS_PER_HOUR,
       alertCooldownMinutes: env.ALERT_COOLDOWN_MINUTES,
     },
@@ -56,6 +58,7 @@ export const GET = api({ auth: "user" }, async ({ env }) => {
       xContentDays: env.X_CONTENT_RETENTION_DAYS,
       rssContentDays: env.RSS_CONTENT_RETENTION_DAYS,
       xComplianceRefreshHours: env.X_COMPLIANCE_REFRESH_HOURS,
+      xComplianceMaxReadsPerDay: env.X_COMPLIANCE_MAX_READS_PER_DAY,
     },
     scoring: { version: SCORING_VERSION, importanceWeights: IMPORTANCE_WEIGHTS, confidenceWeights: CONFIDENCE_WEIGHTS, bands: PRIORITY_BANDS, unknownPolicy: UNKNOWN_POLICY },
   };

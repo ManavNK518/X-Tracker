@@ -19,7 +19,7 @@ interface Info {
   workerMode: string;
   demoMode: boolean;
   budgets: Record<string, number>;
-  retention: { xContentDays: number; rssContentDays: number; xComplianceRefreshHours: number };
+  retention: { xContentDays: number; rssContentDays: number; xComplianceRefreshHours: number; xComplianceMaxReadsPerDay: number };
   scoring: {
     version: string;
     importanceWeights: Record<string, number>;
@@ -308,7 +308,10 @@ function DataRetention({ info }: { info: Info | undefined }) {
       <ul className="space-y-2 text-xs text-fg-2">
         <li>
           X post text is kept for <span className="font-mono">{info.retention.xContentDays}</span> days (X_CONTENT_RETENTION_DAYS), then removed; deleted or unavailable posts are purged when detected
-          {info.retention.xComplianceRefreshHours > 0 ? ` (availability re-checked every ${info.retention.xComplianceRefreshHours}h within the X read budget)` : " (availability re-checks are disabled)"}.
+          {info.retention.xComplianceRefreshHours > 0
+            ? ` (availability first re-checked after ${info.retention.xComplianceRefreshHours}h, then each time a post's age doubles, using at most ${info.retention.xComplianceMaxReadsPerDay} reads per day)`
+            : " (availability re-checks are disabled)"}
+          .
         </li>
         <li>
           Official feed text is kept for <span className="font-mono">{info.retention.rssContentDays}</span> days (RSS_CONTENT_RETENTION_DAYS).

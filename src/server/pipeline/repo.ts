@@ -23,6 +23,7 @@ export function toSourceRef(row: SourceRow): SourceRef {
     enabled: row.enabled,
     isDemo: row.isDemo,
     config: row.config ?? {},
+    lastAttemptAt: row.lastAttemptAt,
   };
 }
 

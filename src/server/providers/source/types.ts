@@ -41,6 +41,8 @@ export interface SourceRef {
   enabled: boolean;
   isDemo: boolean;
   config: Record<string, unknown>;
+  /** Last collection attempt; used to rotate fairly between queries when limits bind. */
+  lastAttemptAt?: Date | null;
 }
 
 export interface CollectionRuleRef {
@@ -49,6 +51,7 @@ export interface CollectionRuleRef {
   query: string;
   maxResults: number;
   sinceId: string | null;
+  lastRunAt?: Date | null;
 }
 
 export interface SourceOutcome {
@@ -69,6 +72,8 @@ export interface RuleOutcome {
   newestId?: string | null;
   itemsFound: number;
   error?: string;
+  /** Not run this time (limits or an earlier stop); it stays due and keeps its place in the rotation. */
+  deferred?: boolean;
 }
 
 export interface CollectResult {
@@ -90,6 +95,15 @@ export interface CollectContext {
   signal?: AbortSignal;
   /** Remaining billable reads allowed today (X). */
   readBudget: number;
+  /** Further per-run limits (X). Omitted fields are unlimited. */
+  limits?: {
+    /** API requests this run may make. */
+    queries?: number;
+    /** Estimated spend this run may add. */
+    costUsd?: number;
+    /** Estimated spend keyword rules may add (part of costUsd). */
+    keywordRuleCostUsd?: number;
+  };
 }
 
 export interface SourceProvider {

@@ -20,14 +20,14 @@ import {
 import { evaluateAlerts, processDeliveries } from "@/server/alerts/engine";
 import { publish } from "@/server/lib/bus";
 import { errorMessage, logger } from "@/server/lib/logger";
-import { recordUsage, usageToday } from "@/server/pipeline/budget";
+import { recordUsage, xBudgetToday, xDailyLimits, type XReadPurpose } from "@/server/pipeline/budget";
 import { ingestItems, processPending, queueDepth, type PipelineContext } from "@/server/pipeline/process";
 import { reverifyActiveEvents } from "@/server/pipeline/recompute";
 import { toSourceRef } from "@/server/pipeline/repo";
 import { DEMO_SOURCES } from "@/server/providers/source/demo/fixtures";
 import { DemoProvider } from "@/server/providers/source/demo/provider";
 import { RssProvider } from "@/server/providers/source/rss/provider";
-import type { CollectResult, SourceProvider } from "@/server/providers/source/types";
+import type { CollectContext, CollectionRuleRef, CollectResult, SourceProvider } from "@/server/providers/source/types";
 import { XClient, xPostUrl } from "@/server/providers/source/x/client";
 import { XProvider, refreshPostAvailability, toItem, type XCollectResult } from "@/server/providers/source/x/provider";
 import { buildAccountQueries } from "@/server/providers/source/x/client";
@@ -140,11 +140,20 @@ async function buildProvider(job: JobContext, provider: ProviderId): Promise<Sou
       bearerToken: env.X_BEARER_TOKEN,
       baseUrl: env.X_API_BASE_URL,
       maxResultsPerQuery: env.X_MAX_RESULTS_PER_QUERY,
-      maxQueriesPerRun: Math.max(1, Math.ceil(env.MAX_SOURCE_QUERIES_PER_HOUR / Math.max(1, Math.floor(3600 / env.X_POLL_SECONDS)))),
+      // The per-run allowance is whatever is left of the hourly cap (passed in collect limits).
+      maxQueriesPerRun: env.MAX_SOURCE_QUERIES_PER_HOUR,
+      postReadCostUsd: env.X_POST_READ_COST_USD,
+      userReadCostUsd: env.X_USER_READ_COST_USD,
     });
   }
   const run = await ensureDemo(job.pipeline.db);
   return new DemoProvider({ enabled: env.DEMO_MODE, intervalSeconds: env.DEMO_INTERVAL_SECONDS, runStartedAt: run.startedAt, runId: run.runId });
+}
+
+async function recordXReads(db: Db, env: Env, reads: { posts: number; users: number; purpose: XReadPurpose }, now = new Date()) {
+  const meta = { purpose: reads.purpose };
+  if (reads.posts) await recordUsage(db, { provider: "x", operation: "post_read", units: reads.posts, costUsd: reads.posts * env.X_POST_READ_COST_USD, meta, at: now });
+  if (reads.users) await recordUsage(db, { provider: "x", operation: "user_read", units: reads.users, costUsd: reads.users * env.X_USER_READ_COST_USD, meta, at: now });
 }
 
 async function xRequestsLastHour(db: Db, now: Date): Promise<number> {
@@ -185,27 +194,39 @@ export async function collectJob(job: JobContext, providerId: ProviderId): Promi
   }
 
   let readBudget = Number.MAX_SAFE_INTEGER;
-  const rules: { id: string; name: string; query: string; maxResults: number; sinceId: string | null }[] = [];
+  let limits: CollectContext["limits"];
+  const rules: CollectionRuleRef[] = [];
   if (providerId === "x") {
-    const used = await usageToday(db, "x", "post_read", now);
-    readBudget = Math.max(0, env.X_MAX_POST_READS_PER_DAY - used.units);
+    const budget = await xBudgetToday(db, xDailyLimits(env), now);
+    readBudget = budget.collection.postReads;
     const queriesUsed = await xRequestsLastHour(db, now);
-    if (readBudget < 10 || queriesUsed >= env.MAX_SOURCE_QUERIES_PER_HOUR) {
-      const reason = readBudget < 10 ? `daily X read budget reached (${used.units}/${env.X_MAX_POST_READS_PER_DAY})` : `hourly X query limit reached (${queriesUsed}/${env.MAX_SOURCE_QUERIES_PER_HOUR})`;
+    const minPageCost = 10 * env.X_POST_READ_COST_USD;
+    if (readBudget < 10 || budget.collection.costUsd < minPageCost || queriesUsed >= env.MAX_SOURCE_QUERIES_PER_HOUR) {
+      const reason =
+        readBudget < 10
+          ? `daily X read budget reached (${budget.postReadsToday}/${env.X_MAX_POST_READS_PER_DAY}, ${env.X_COMPLIANCE_MAX_READS_PER_DAY} held for deletion checks)`
+          : budget.collection.costUsd < minPageCost
+            ? `daily X cost budget reached (est. $${budget.spentTodayUsd.toFixed(3)} of $${env.X_MAX_DAILY_COST_USD.toFixed(2)})`
+            : `hourly X query limit reached (${queriesUsed}/${env.MAX_SOURCE_QUERIES_PER_HOUR})`;
       await setProviderHealth(db, "x", { status: "degraded", details: { reason } }, now);
       return { status: "skipped", stats: { reason } };
     }
+    limits = {
+      queries: env.MAX_SOURCE_QUERIES_PER_HOUR - queriesUsed,
+      costUsd: budget.collection.costUsd,
+      keywordRuleCostUsd: budget.collection.keywordRuleCostUsd,
+    };
     const ruleRows = await db.select().from(collectionRules).where(and(eq(collectionRules.provider, "x"), eq(collectionRules.enabled, true)));
     for (const r of ruleRows) {
       if (r.lastRunAt && now.getTime() - r.lastRunAt.getTime() < r.intervalSeconds * 1000) continue;
-      rules.push({ id: r.id, name: r.name, query: r.query, maxResults: r.maxResults, sinceId: r.sinceId });
+      rules.push({ id: r.id, name: r.name, query: r.query, maxResults: r.maxResults, sinceId: r.sinceId, lastRunAt: r.lastRunAt });
     }
   }
 
   const refs = sourceRows.map(toSourceRef);
   let result: CollectResult;
   try {
-    result = await provider.collect({ sources: refs, rules, now, signal: job.signal, readBudget });
+    result = await provider.collect({ sources: refs, rules, now, signal: job.signal, readBudget, limits });
   } catch (error) {
     const message = errorMessage(error);
     await setProviderHealth(db, providerId, { status: "error", error: message }, now);
@@ -234,21 +255,26 @@ export async function collectJob(job: JobContext, providerId: ProviderId): Promi
       .where(eq(sources.id, row.id));
   }
   for (const r of result.ruleOutcomes) {
+    // A deferred rule did not run: it stays due and keeps its place in the rotation.
+    if (r.deferred) continue;
     await db
       .update(collectionRules)
       .set({ lastRunAt: now, lastError: r.ok ? null : (r.error ?? "failed"), ...(r.newestId ? { sinceId: r.newestId } : {}), updatedAt: now })
       .where(eq(collectionRules.id, r.ruleId));
   }
 
-  if (providerId === "x" && result.requests > 0) {
-    await recordUsage(db, { provider: "x", operation: "request", units: result.requests, at: now });
-    if (result.postsRead) await recordUsage(db, { provider: "x", operation: "post_read", units: result.postsRead, costUsd: result.postsRead * env.X_POST_READ_COST_USD, at: now });
-    if (result.usersRead) await recordUsage(db, { provider: "x", operation: "user_read", units: result.usersRead, costUsd: result.usersRead * env.X_USER_READ_COST_USD, at: now });
+  const x = providerId === "x" ? (result as XCollectResult) : null;
+  if (x && x.requests > 0) {
+    await recordUsage(db, { provider: "x", operation: "request", units: x.requests, at: now });
+    await recordXReads(db, env, { posts: x.postsRead - x.keywordRule.postsRead, users: x.usersRead - x.keywordRule.usersRead, purpose: "accounts" }, now);
+    await recordXReads(db, env, { posts: x.keywordRule.postsRead, users: x.keywordRule.usersRead, purpose: "keyword_rule" }, now);
   }
 
-  const okCount = result.sourceOutcomes.filter((o) => o.ok).length + result.ruleOutcomes.filter((o) => o.ok).length;
-  const failCount = result.sourceOutcomes.filter((o) => !o.ok && o.status !== "awaiting_credentials").length + result.ruleOutcomes.filter((o) => !o.ok).length;
-  const firstError = [...result.sourceOutcomes, ...result.ruleOutcomes].find((o) => !o.ok && "error" in o)?.error ?? null;
+  const ran = result.ruleOutcomes.filter((o) => !o.deferred);
+  const okCount = result.sourceOutcomes.filter((o) => o.ok).length + ran.filter((o) => o.ok).length;
+  const failCount = result.sourceOutcomes.filter((o) => !o.ok && o.status !== "awaiting_credentials").length + ran.filter((o) => !o.ok).length;
+  const firstError = [...result.sourceOutcomes, ...ran].find((o) => !o.ok && "error" in o)?.error ?? null;
+  const deferredCount = x ? x.deferred.accountGroups + x.deferred.rules : 0;
   await setProviderHealth(
     db,
     providerId,
@@ -257,7 +283,16 @@ export async function collectJob(job: JobContext, providerId: ProviderId): Promi
       success: okCount > 0,
       error: failCount > 0 ? firstError : null,
       rateLimit: result.rateLimit ?? null,
-      details: { lastRunItems: result.items.length, inserted: ingest.inserted, duplicates: ingest.duplicates, ok: okCount, failed: failCount },
+      details: {
+        lastRunItems: result.items.length,
+        inserted: ingest.inserted,
+        duplicates: ingest.duplicates,
+        ok: okCount,
+        failed: failCount,
+        ...(x && deferredCount > 0
+          ? { deferred: x.deferred, reason: `${deferredCount} ${deferredCount === 1 ? "query" : "queries"} left for the next run: ${x.deferred.reason}` }
+          : {}),
+      },
     },
     now,
   );
@@ -283,37 +318,69 @@ export async function xStreamJob(job: JobContext): Promise<JobResult> {
     await setProviderHealth(db, "x", { status: "not_configured", details: { reason: "X_BEARER_TOKEN not set" } });
     return { status: "skipped", stats: { reason: "not configured" } };
   }
-  const used = await usageToday(db, "x", "post_read");
-  let budget = env.X_MAX_POST_READS_PER_DAY - used.units;
-  if (budget <= 0) return { status: "skipped", stats: { reason: "daily X read budget reached" } };
+  const now = job.pipeline.now();
+  const budget = await xBudgetToday(db, xDailyLimits(env), now);
+  const price = { post: env.X_POST_READ_COST_USD, user: env.X_USER_READ_COST_USD };
+  // Each delivered post is a billed post read, plus its expanded author profile.
+  const perPost = price.post + price.user;
+  let reads = budget.collection.postReads;
+  let cost = budget.collection.costUsd;
+  let ruleCost = budget.collection.keywordRuleCostUsd;
+  if (reads <= 0 || cost < perPost) {
+    const reason = `daily X budget reached (est. $${budget.spentTodayUsd.toFixed(3)} of $${env.X_MAX_DAILY_COST_USD.toFixed(2)}, ${budget.postReadsToday}/${env.X_MAX_POST_READS_PER_DAY} post reads)`;
+    await setProviderHealth(db, "x", { status: "degraded", details: { stream: "stopped", reason } }, now);
+    return { status: "skipped", stats: { reason } };
+  }
   const accountRows = await db.select().from(sources).where(and(eq(sources.provider, "x"), eq(sources.enabled, true)));
-  const ruleRows = await db.select().from(collectionRules).where(and(eq(collectionRules.provider, "x"), eq(collectionRules.enabled, true)));
+  // Keyword rules join the stream only while they are within their share of today's budget.
+  const includeRules = ruleCost >= perPost;
+  const ruleRows = includeRules
+    ? await db.select().from(collectionRules).where(and(eq(collectionRules.provider, "x"), eq(collectionRules.enabled, true)))
+    : [];
   const desired = [
     ...buildAccountQueries(accountRows.map((s) => s.handle).filter((h): h is string => Boolean(h)), 1024).map((value, i) => ({ value, tag: `accounts-${i}` })),
     ...ruleRows.map((r) => ({ value: r.query, tag: `rule-${r.id}` })),
   ].slice(0, 1000);
-  if (desired.length === 0) return { status: "skipped", stats: { reason: "no enabled X sources or rules" } };
+  if (desired.length === 0) {
+    return { status: "skipped", stats: { reason: includeRules ? "no enabled X sources or rules" : "keyword-rule share of today's X budget used and no accounts enabled" } };
+  }
   await syncStreamRules({ bearerToken: env.X_BEARER_TOKEN, baseUrl: env.X_API_BASE_URL }, desired);
   const byHandle = new Map(accountRows.map((s) => [s.handle?.toLowerCase(), toSourceRef(s)]));
   let delivered = 0;
+  let stopReason: string | null = null;
   const outcome = await runFilteredStream({
     bearerToken: env.X_BEARER_TOKEN,
     baseUrl: env.X_API_BASE_URL,
     signal: job.signal,
-    onStatus: (s) => void setProviderHealth(db, "x", { status: s.state === "connected" ? "ok" : s.state === "stopped" ? "degraded" : "degraded", success: s.state === "connected", details: { stream: s.state, detail: s.detail } }),
+    onStatus: (s) => void setProviderHealth(db, "x", { status: s.state === "connected" ? "ok" : "degraded", success: s.state === "connected", details: { stream: s.state, detail: s.detail } }),
     onPost: async ({ post, users }) => {
       const author = post.author_id ? users.get(post.author_id) : undefined;
       const src = author ? (byHandle.get(author.username.toLowerCase()) ?? null) : null;
       const item = toItem(post, src, users);
       item.url = xPostUrl(post.id, author?.username);
       await ingestItems(job.pipeline, [item]);
-      await recordUsage(db, { provider: "x", operation: "post_read", units: 1, costUsd: env.X_POST_READ_COST_USD });
+      // Posts by registered accounts count as account reads, even when a keyword rule also matched.
+      const purpose: XReadPurpose = src ? "accounts" : "keyword_rule";
+      await recordXReads(db, env, { posts: 1, users: users.size, purpose });
+      const usd = price.post + users.size * price.user;
       delivered++;
-      budget--;
-      return budget > 0;
+      reads--;
+      cost -= usd;
+      if (purpose === "keyword_rule") ruleCost -= usd;
+      if (reads <= 0 || cost < perPost) {
+        stopReason = "daily X budget reached";
+        return false;
+      }
+      if (includeRules && ruleCost < perPost) {
+        // Reconnects on the next run with account rules only.
+        stopReason = "keyword-rule share of today's X budget used; reconnecting without keyword rules";
+        return false;
+      }
+      return true;
     },
   });
-  return { status: "ok", stats: { delivered, reason: outcome.reason } };
+  if (stopReason) await setProviderHealth(db, "x", { status: "degraded", details: { stream: "stopped", reason: stopReason } });
+  return { status: "ok", stats: { delivered, reason: stopReason ?? outcome.reason } };
 }
 
 // ---------------------------------------------------------------------------
@@ -379,18 +446,26 @@ export async function recoverAfterRestart(db: Db): Promise<{ items: number; runs
 
 /**
  * X compliance refresh: re-checks stored posts and purges content that is no
- * longer available (deleted / protected / withheld). Each lookup is a billed
- * read, so it runs within the daily X read budget.
+ * longer available (deleted / protected / withheld). Each lookup of a post
+ * that still exists is a billed read, so re-checks back off as a post ages
+ * and draw only on their own daily reserve (X_COMPLIANCE_MAX_READS_PER_DAY).
  */
 export async function xComplianceJob(job: JobContext): Promise<JobResult> {
   const env = job.env;
   const db = job.pipeline.db;
   const now = job.pipeline.now();
   if (!env.X_BEARER_TOKEN || env.X_COMPLIANCE_REFRESH_HOURS === 0) return { status: "skipped", stats: { reason: "not configured or disabled" } };
-  const used = await usageToday(db, "x", "post_read", now);
-  const budget = Math.min(100, env.X_MAX_POST_READS_PER_DAY - used.units);
-  if (budget <= 0) return { status: "skipped", stats: { reason: "daily X read budget reached" } };
+  const budget = await xBudgetToday(db, xDailyLimits(env), now);
+  const affordable = env.X_POST_READ_COST_USD > 0 ? Math.floor(budget.compliance.costUsd / env.X_POST_READ_COST_USD + 1e-9) : Number.POSITIVE_INFINITY;
+  const limit = Math.min(100, budget.compliance.postReads, affordable);
+  if (limit <= 0) {
+    return { status: "skipped", stats: { reason: `today's deletion-check reads used (${budget.complianceReadsToday}/${env.X_COMPLIANCE_MAX_READS_PER_DAY})` } };
+  }
   const cutoff = new Date(now.getTime() - env.X_COMPLIANCE_REFRESH_HOURS * 3_600_000);
+  // First check once a post is X_COMPLIANCE_REFRESH_HOURS old; after that, each
+  // time its age has doubled since the last check (about 1, 2, 4, 8 and 16 days
+  // at the default), never more often than X_COMPLIANCE_REFRESH_HOURS.
+  const doubled = sql`${items.lastRefreshedAt} <= ${items.collectedAt} + (${now.toISOString()}::timestamptz - ${items.collectedAt}) / 2`;
   const due = await db
     .select({ id: items.id, externalId: items.externalId })
     .from(items)
@@ -399,14 +474,16 @@ export async function xComplianceJob(job: JobContext): Promise<JobResult> {
         eq(items.provider, "x"),
         eq(items.contentStatus, "available"),
         lt(items.collectedAt, cutoff),
-        or(isNull(items.lastRefreshedAt), lt(items.lastRefreshedAt, cutoff)),
+        or(isNull(items.lastRefreshedAt), and(lt(items.lastRefreshedAt, cutoff), doubled)),
       ),
     )
-    .limit(budget);
+    // Never-checked posts first: deletions are most likely soon after posting.
+    .orderBy(sql`${items.lastRefreshedAt} asc nulls first`, items.collectedAt)
+    .limit(limit);
   if (due.length === 0) return { status: "ok", stats: { checked: 0 } };
   const client = new XClient(env.X_BEARER_TOKEN, env.X_API_BASE_URL);
   const res = await refreshPostAvailability(client, due.map((d) => d.externalId), job.signal);
-  await recordUsage(db, { provider: "x", operation: "post_read", units: res.reads, costUsd: res.reads * env.X_POST_READ_COST_USD, meta: { purpose: "compliance" }, at: now });
+  await recordXReads(db, env, { posts: res.reads, users: 0, purpose: "compliance" }, now);
   await recordUsage(db, { provider: "x", operation: "request", units: Math.ceil(due.length / 100), at: now });
   const unavailableIds = due.filter((d) => res.unavailable.includes(d.externalId)).map((d) => d.id);
   if (unavailableIds.length) {

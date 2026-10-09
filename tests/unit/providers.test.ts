@@ -2,12 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { parseFeed } from "@/server/providers/source/rss/parse";
 import { RssProvider } from "@/server/providers/source/rss/provider";
 import { buildAccountQueries, parseRateLimit, XClient, xPostUrl } from "@/server/providers/source/x/client";
-import { compareIds, maxId, minId, refreshPostAvailability, XProvider } from "@/server/providers/source/x/provider";
+import { compareIds, maxId, minId, refreshPostAvailability, XProvider, type XProviderOptions } from "@/server/providers/source/x/provider";
 import { runFilteredStream, streamBackoffMs, syncStreamRules } from "@/server/providers/source/x/stream";
 import { DemoProvider } from "@/server/providers/source/demo/provider";
 import { DEMO_FIXTURES } from "@/server/providers/source/demo/fixtures";
 import { ProviderError } from "@/server/lib/errors";
-import type { SourceRef } from "@/server/providers/source/types";
+import type { CollectionRuleRef, SourceRef } from "@/server/providers/source/types";
 
 // --- Deterministic fixtures (TEST DATA, not real posts) ----------------------
 
@@ -151,10 +151,20 @@ describe("X provider (mocked API)", () => {
       for (const [path, h] of Object.entries(handlers)) if (u.pathname.endsWith(path)) return h(u);
       return json({ title: "not found" }, { status: 404 });
     });
+  const xProvider = (o: Partial<XProviderOptions> = {}) =>
+    new XProvider({ bearerToken: "t", baseUrl: "https://api.test/2", maxResultsPerQuery: 25, maxQueriesPerRun: 3, postReadCostUsd: 0.005, userReadCostUsd: 0.01, ...o });
+  const at = (hhmm: string) => new Date(`2026-10-08T${hhmm}:00Z`);
+  const rule = (o: Partial<CollectionRuleRef> = {}): CollectionRuleRef => ({ id: "r", name: "r", query: "(FOMC) lang:en", maxResults: 10, sinceId: null, ...o });
+  /** Records each recent-search request and answers with an empty page. */
+  const searchLog = () => {
+    const queries: URL[] = [];
+    const fetchImpl = routes({ "/tweets/search/recent": (u) => (queries.push(u), json({ meta: { result_count: 0 } })) });
+    return { queries, fetchImpl };
+  };
 
   it("is not configured without a token and does not call the API", async () => {
     const fetchImpl = vi.fn();
-    const p = new XProvider({ bearerToken: undefined, baseUrl: "https://api.test/2", fetchImpl, maxResultsPerQuery: 25, maxQueriesPerRun: 3 });
+    const p = xProvider({ bearerToken: undefined, fetchImpl });
     expect(p.configured().ok).toBe(false);
     const r = await p.collect({ sources: [fed], rules: [], now: new Date(), readBudget: 100 });
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -169,8 +179,7 @@ describe("X provider (mocked API)", () => {
         return json({ data: [{ id: "1001", text: "The FOMC decided to keep the policy rate unchanged.", author_id: "u1", created_at: "2026-10-08T18:00:00.000Z", lang: "en" }], meta: { result_count: 1, newest_id: "1001" } });
       },
     });
-    const p = new XProvider({ bearerToken: "t", baseUrl: "https://api.test/2", fetchImpl, maxResultsPerQuery: 25, maxQueriesPerRun: 3 });
-    const r = await p.collect({ sources: [fed], rules: [], now: new Date(), readBudget: 100 });
+    const r = await xProvider({ fetchImpl }).collect({ sources: [fed], rules: [], now: new Date(), readBudget: 100 });
     expect(r.items).toHaveLength(1);
     expect(r.items[0]).toMatchObject({ provider: "x", externalId: "1001", sourceId: "fed", url: "https://x.com/federalreserve/status/1001" });
     expect(r.items[0].publishedAt!.toISOString()).toBe("2026-10-08T18:00:00.000Z");
@@ -181,17 +190,98 @@ describe("X provider (mocked API)", () => {
 
   it("respects the read budget (no requests when exhausted)", async () => {
     const fetchImpl = vi.fn();
-    const p = new XProvider({ bearerToken: "t", baseUrl: "https://api.test/2", fetchImpl, maxResultsPerQuery: 25, maxQueriesPerRun: 3 });
-    await p.collect({ sources: [{ ...fed, config: { xUserId: "u1" } }], rules: [{ id: "r", name: "r", query: "q", maxResults: 10, sinceId: null }], now: new Date(), readBudget: 5 });
+    await xProvider({ fetchImpl }).collect({ sources: [{ ...fed, config: { xUserId: "u1" } }], rules: [rule()], now: new Date(), readBudget: 5 });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("stops on rate limiting and reports it per source/rule", async () => {
+  it("stops on rate limiting and leaves the remaining queries for a later run", async () => {
     const fetchImpl = routes({ "/tweets/search/recent": () => json({}, { status: 429, headers: { "x-rate-limit-reset": String(Math.floor(Date.now() / 1000) + 900) } }) });
-    const p = new XProvider({ bearerToken: "t", baseUrl: "https://api.test/2", fetchImpl, maxResultsPerQuery: 25, maxQueriesPerRun: 5, retry: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 5, sleep: async () => undefined } });
-    const r = await p.collect({ sources: [{ ...fed, config: { xUserId: "u1" } }], rules: [{ id: "r", name: "r", query: "q", maxResults: 10, sinceId: null }], now: new Date(), readBudget: 100 });
+    const p = xProvider({ fetchImpl, maxQueriesPerRun: 5, retry: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 5, sleep: async () => undefined } });
+    const r = await p.collect({ sources: [{ ...fed, config: { xUserId: "u1" } }], rules: [rule()], now: new Date(), readBudget: 100 });
     expect(r.sourceOutcomes[0].status).toBe("rate_limited");
     expect(r.items).toHaveLength(0);
+    // One request: the reset is 15 minutes away, so it is surfaced rather than retried, and the rule is not attempted.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(r.ruleOutcomes[0]).toMatchObject({ ruleId: "r", deferred: true });
+  });
+
+  it("gives keyword rules a turn when only one query fits in a run", async () => {
+    const accounts = [{ ...fed, config: { xUserId: "u1", sinceId: "100" }, lastAttemptAt: at("15:00") }];
+    // The rule last ran before the accounts did, so it goes first.
+    const first = searchLog();
+    const r1 = await xProvider({ fetchImpl: first.fetchImpl }).collect({
+      sources: accounts,
+      rules: [rule({ lastRunAt: at("14:00") })],
+      now: at("15:05"),
+      readBudget: 100,
+      limits: { queries: 1 },
+    });
+    expect(first.queries.map((u) => u.searchParams.get("query"))).toEqual(["(FOMC) lang:en"]);
+    expect(r1.ruleOutcomes).toEqual([expect.objectContaining({ ruleId: "r", ok: true })]);
+    expect(r1.deferred).toMatchObject({ accountGroups: 1, rules: 0, reason: "query limit for this run reached" });
+    expect(r1.sourceOutcomes).toHaveLength(0);
+
+    // Next run: the rule has just run, so the accounts go first and the rule waits its turn.
+    const second = searchLog();
+    const r2 = await xProvider({ fetchImpl: second.fetchImpl }).collect({
+      sources: accounts,
+      rules: [rule({ lastRunAt: at("15:05") })],
+      now: at("15:10"),
+      readBudget: 100,
+      limits: { queries: 1 },
+    });
+    expect(second.queries[0].searchParams.get("query")).toContain("from:federalreserve");
+    expect(r2.ruleOutcomes).toEqual([expect.objectContaining({ ruleId: "r", ok: false, deferred: true })]);
+  });
+
+  it("rotates through account groups that do not fit in one query", async () => {
+    const handles = Array.from({ length: 40 }, (_, i) => `account_no_${String(i).padStart(2, "0")}`);
+    const groups = buildAccountQueries(handles);
+    expect(groups.length).toBeGreaterThan(1);
+    const inFirstGroup = new Set(groups[0].match(/from:(\w+)/g)!.map((m) => m.slice(5)));
+    const sources = handles.map((h, i) =>
+      source({ id: `s${i}`, provider: "x", externalId: h, handle: h, config: { xUserId: `u${i}` }, lastAttemptAt: inFirstGroup.has(h) ? at("15:00") : at("14:00") }),
+    );
+    const log = searchLog();
+    await xProvider({ fetchImpl: log.fetchImpl }).collect({ sources, rules: [], now: at("15:05"), readBudget: 100, limits: { queries: 1 } });
+    expect(log.queries.map((u) => u.searchParams.get("query"))).toEqual([groups[1]]);
+  });
+
+  it("keeps keyword rules within their share of the budget and reports their reads separately", async () => {
+    const accounts = [{ ...fed, config: { xUserId: "u1" } }];
+    const capped = searchLog();
+    const r1 = await xProvider({ fetchImpl: capped.fetchImpl }).collect({ sources: accounts, rules: [rule()], now: new Date(), readBudget: 100, limits: { costUsd: 1, keywordRuleCostUsd: 0.1 } });
+    // 10 posts plus 10 author profiles would cost $0.15, more than the rule's remaining $0.10.
+    expect(capped.queries).toHaveLength(1);
+    expect(r1.ruleOutcomes[0]).toMatchObject({ deferred: true, error: "keyword-rule share of today's X budget used" });
+
+    const fetchImpl = routes({
+      "/tweets/search/recent": (u) =>
+        u.searchParams.get("expansions") === "author_id"
+          ? json({
+              data: [{ id: "7", text: "a", author_id: "a1" }, { id: "8", text: "b", author_id: "a2" }],
+              includes: { users: [{ id: "a1", username: "a", name: "A" }, { id: "a2", username: "b", name: "B" }] },
+              meta: { result_count: 2, newest_id: "8" },
+            })
+          : json({ data: [{ id: "9", text: "c", author_id: "u1" }], meta: { result_count: 1, newest_id: "9" } }),
+    });
+    const r2 = await xProvider({ fetchImpl }).collect({ sources: accounts, rules: [rule()], now: new Date(), readBudget: 100, limits: { costUsd: 1, keywordRuleCostUsd: 0.5 } });
+    expect(r2.postsRead).toBe(3);
+    expect(r2.usersRead).toBe(2);
+    expect(r2.keywordRule).toEqual({ postsRead: 2, usersRead: 2 });
+  });
+
+  it("sizes requests to the remaining cost budget and never pages past the query limit", async () => {
+    const log = searchLog();
+    await xProvider({ fetchImpl: log.fetchImpl }).collect({ sources: [{ ...fed, config: { xUserId: "u1" } }], rules: [], now: new Date(), readBudget: 100, limits: { costUsd: 0.06 } });
+    expect(log.queries[0].searchParams.get("max_results")).toBe("12");
+
+    const pages: URL[] = [];
+    const fetchImpl = routes({
+      "/tweets/search/recent": (u) => (pages.push(u), json({ data: [{ id: "250", text: "p", author_id: "u1" }], meta: { result_count: 10, newest_id: "300", next_token: "more" } })),
+    });
+    await xProvider({ fetchImpl }).collect({ sources: [{ ...fed, config: { xUserId: "u1", sinceId: "100" } }], rules: [], now: new Date(), readBudget: 100, limits: { queries: 1 } });
+    expect(pages).toHaveLength(1);
   });
 
   it("detects deleted/unavailable posts for compliance refresh", async () => {

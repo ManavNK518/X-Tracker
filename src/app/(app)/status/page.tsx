@@ -22,7 +22,20 @@ interface StatusDTO {
   runs: { id: string; job: string; status: string; startedAt: string; durationMs: number | null; stats: Record<string, unknown>; error: string | null }[];
   failedJobs: { id: string; job: string; refId: string | null; error: string; attempts: number; createdAt: string }[];
   ai: { configured: boolean; model: string | null; lastSuccessfulAnalysisAt: string | null; today: { calls: number; units: number; costUsd: number }; limits: { maxAnalysesPerDay: number; maxDailyCostUsd: number; minScoreForAi: number }; paused: string | null; failures24h: Record<string, number> };
-  x: { configured: boolean; mode: string; postReadsToday: number; userReadsToday: number; estimatedCostToday: number; dailyReadBudget: number; maxQueriesPerHour: number };
+  x: {
+    configured: boolean;
+    mode: string;
+    postReadsToday: number;
+    userReadsToday: number;
+    estimatedCostToday: number;
+    dailyReadBudget: number;
+    dailyCostBudget: number;
+    keywordRuleCostToday: number;
+    keywordRuleCostBudget: number;
+    complianceReadsToday: number;
+    complianceReadBudget: number;
+    maxQueriesPerHour: number;
+  };
   notifications: { channels: { channel: string; configured: boolean; state: string; verifiedAt: string | null; lastError: string | null }[]; last24h: { channel: string; status: string; n: number }[]; recentFailures: { id: string; channel: string; attempts: number; lastError: string | null; updatedAt: string }[] };
   marketData: { status: string; note: string };
 }
@@ -281,12 +294,24 @@ export default function StatusPage() {
               </dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-fg-2">User reads today</dt>
+              <dt className="text-fg-2">Author profile reads today</dt>
               <dd className="font-mono">{s.x.userReadsToday}</dd>
             </div>
             <div className="flex justify-between">
               <dt className="text-fg-2">Estimated cost today</dt>
-              <dd className="font-mono">${s.x.estimatedCostToday.toFixed(3)}</dd>
+              <dd className="font-mono">
+                ${s.x.estimatedCostToday.toFixed(3)} / ${s.x.dailyCostBudget.toFixed(2)}
+              </dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-fg-2">Keyword rules (cost)</dt>
+              <dd className="font-mono">
+                ${s.x.keywordRuleCostToday.toFixed(3)} / ${s.x.keywordRuleCostBudget.toFixed(2)}
+              </dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-fg-2">Deletion re-checks (reads)</dt>
+              <dd className="font-mono">{s.x.complianceReadBudget > 0 ? `${s.x.complianceReadsToday} / ${s.x.complianceReadBudget}` : "off"}</dd>
             </div>
             <div className="flex justify-between">
               <dt className="text-fg-2">Max queries / hour</dt>

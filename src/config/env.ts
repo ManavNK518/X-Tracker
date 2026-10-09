@@ -29,15 +29,15 @@ const int = (fallback: number, min = 0, max = Number.MAX_SAFE_INTEGER) =>
       return Math.floor(n);
     });
 
-const num = (fallback: number, min = 0) =>
+const num = (fallback: number, min = 0, max = Number.POSITIVE_INFINITY) =>
   z
     .string()
     .optional()
     .transform((v, ctx) => {
       if (v === undefined || v.trim() === "") return fallback;
       const n = Number(v);
-      if (!Number.isFinite(n) || n < min) {
-        ctx.addIssue({ code: "custom", message: `expected a number >= ${min}` });
+      if (!Number.isFinite(n) || n < min || n > max) {
+        ctx.addIssue({ code: "custom", message: Number.isFinite(max) ? `expected a number between ${min} and ${max}` : `expected a number >= ${min}` });
         return z.NEVER;
       }
       return n;
@@ -85,8 +85,15 @@ const EnvSchema = z.object({
   X_POLL_SECONDS: int(300, 30, 86_400),
   X_MAX_RESULTS_PER_QUERY: int(25, 10, 100),
   X_MAX_POST_READS_PER_DAY: int(500, 0, 3_000_000),
+  /** Estimated daily spend cap across all X reads (posts and author profiles, collection and deletion checks). */
+  X_MAX_DAILY_COST_USD: num(2.5),
+  /** Largest share of X_MAX_DAILY_COST_USD that keyword rules may use; the rest stays available to registered accounts. */
+  X_KEYWORD_RULE_BUDGET_SHARE: num(0.5, 0, 1),
   X_POST_READ_COST_USD: num(0.005),
+  /** First deletion re-check after N hours (0 = off); later re-checks back off as the post ages. */
   X_COMPLIANCE_REFRESH_HOURS: int(24, 0, 24 * 30),
+  /** Post reads reserved per day for deletion re-checks (taken out of X_MAX_POST_READS_PER_DAY). */
+  X_COMPLIANCE_MAX_READS_PER_DAY: int(50, 0, 3_000_000),
   X_CONTENT_RETENTION_DAYS: int(30, 1, 3650),
 
   // AI analysis (optional)
@@ -103,7 +110,7 @@ const EnvSchema = z.object({
   MAX_AI_DAILY_COST_USD: num(1),
   MIN_SCORE_FOR_AI: int(45, 0, 100),
   MAX_POSTS_PER_INTERVAL: int(50, 1, 5_000),
-  MAX_SOURCE_QUERIES_PER_HOUR: int(12, 0, 10_000),
+  MAX_SOURCE_QUERIES_PER_HOUR: int(30, 0, 10_000),
   MAX_QUEUE_DEPTH: int(2_000, 10, 1_000_000),
   MAX_NOTIFICATIONS_PER_HOUR: int(20, 1, 10_000),
   ALERT_COOLDOWN_MINUTES: int(30, 0, 24 * 60),

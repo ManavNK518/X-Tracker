@@ -22,7 +22,7 @@ import {
   verificationAttempts,
   workerHeartbeats,
 } from "@/server/db/schema";
-import { usageToday } from "@/server/pipeline/budget";
+import { usageToday, xBudgetToday, xDailyLimits } from "@/server/pipeline/budget";
 import { getNotifiers } from "@/server/runtime";
 import { findEventId } from "./events";
 
@@ -119,6 +119,7 @@ export async function getStatus(db: Db, env: Env, auth: AuthUser) {
   const aiToday = await usageToday(db, "anthropic", "extract", now);
   const xReads = await usageToday(db, "x", "post_read", now);
   const xUsers = await usageToday(db, "x", "user_read", now);
+  const xBudget = await xBudgetToday(db, xDailyLimits(env), now);
   const deliveryStats = await db
     .select({ channel: notificationDeliveries.channel, status: notificationDeliveries.status, n: sql<number>`count(*)::int` })
     .from(notificationDeliveries)
@@ -207,6 +208,11 @@ export async function getStatus(db: Db, env: Env, auth: AuthUser) {
       userReadsToday: xUsers.units,
       estimatedCostToday: xReads.costUsd + xUsers.costUsd,
       dailyReadBudget: env.X_MAX_POST_READS_PER_DAY,
+      dailyCostBudget: env.X_MAX_DAILY_COST_USD,
+      keywordRuleCostToday: xBudget.keywordRuleSpentTodayUsd,
+      keywordRuleCostBudget: env.X_MAX_DAILY_COST_USD * env.X_KEYWORD_RULE_BUDGET_SHARE,
+      complianceReadsToday: xBudget.complianceReadsToday,
+      complianceReadBudget: env.X_COMPLIANCE_REFRESH_HOURS > 0 ? env.X_COMPLIANCE_MAX_READS_PER_DAY : 0,
       maxQueriesPerHour: env.MAX_SOURCE_QUERIES_PER_HOUR,
     },
     notifications: {

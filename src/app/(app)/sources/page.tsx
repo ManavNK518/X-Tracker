@@ -279,7 +279,8 @@ function RuleDialog({ rule, onDone }: { rule: CollectionRule | null; onDone: () 
         </Field>
       </div>
       <p className="rounded border border-warning/30 bg-warning-soft px-3 py-2 text-2xs text-warning">
-        Worst case ≈ {reads.toLocaleString()} post reads/day if every run is full (≈ ${(reads * 0.005).toFixed(2)}/day at $0.005 per read, before the daily read budget caps it). Check current pricing in the X Developer Console.
+        Worst case ≈ {reads.toLocaleString()} post reads/day if every run is full, plus up to one author profile per post (≈ ${(reads * 0.015).toFixed(2)}/day at $0.005 per post and $0.010 per profile).
+        Keyword rules together may use at most half of the daily X cost cap by default (X_KEYWORD_RULE_BUDGET_SHARE). Check current pricing in the X Developer Console.
       </p>
       <Checkbox checked={enabled} onChange={setEnabled} label="Enabled" />
       {error && <p className="text-xs text-negative">{error}</p>}
