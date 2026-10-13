@@ -210,6 +210,8 @@ export interface NotificationDTO {
 
 export interface MeDTO {
   user: { id: string; email: string; displayName: string; role: string; plan: string };
+  /** True when sign-in is turned off on this computer (LOCAL_NO_LOGIN). */
+  localMode: boolean;
   preferences: {
     timezone: string;
     theme: string;

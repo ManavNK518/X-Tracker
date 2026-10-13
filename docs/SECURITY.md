@@ -8,6 +8,17 @@
 - Login, signup, password change, account deletion and notification tests are rate-limited per IP. The limiter is **in-memory** (single instance); move it to a shared store for multi-instance deployments.
 - `proxy.ts` only redirects page requests that have no session cookie. Real authorization happens in every API route against the database.
 
+### Local no-login mode (`LOCAL_NO_LOGIN=true`)
+
+For a personal workspace on one computer, the app can open without signing in and act as the workspace owner (the earliest owner account; on a fresh install, an owner with no usable password is created). Every request must meet all of these conditions:
+
+- The app runs in development. The setting is ignored when `NODE_ENV=production`, so `npm start` and deployments always require sign-in.
+- `npm run dev` listens on `127.0.0.1` only, so other devices on the network cannot connect.
+- The request's `Host` is `localhost`, `127.0.0.1` or `[::1]`. This blocks web pages that use DNS rebinding, because their requests carry their own host name.
+- A forwarded client address, if present, is a loopback address.
+
+Public endpoints (login, signup, setup) never trigger the automatic owner. Anything running on the same computer can use the app as the owner while this mode is on. To require sign-in again, remove the setting and restart.
+
 ## Authorization and isolation
 
 - Watchlists, alert rules, notes, notifications, feedback and saved/reviewed states are queried with the caller's user ID. Other users' resources return 404.

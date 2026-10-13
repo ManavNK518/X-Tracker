@@ -64,6 +64,8 @@ const EnvSchema = z.object({
   // Auth
   ALLOW_SIGNUP: bool(false),
   SESSION_TTL_DAYS: int(30, 1, 365),
+  /** Read directly by src/server/auth/local-mode.ts (also used by the proxy); listed here for validation and docs. */
+  LOCAL_NO_LOGIN: bool(false),
 
   // Demo
   DEMO_MODE: bool(false),

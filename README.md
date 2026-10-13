@@ -15,7 +15,7 @@ The product name is set in one place: `src/config/product.ts`.
 | Area | Status |
 | --- | --- |
 | App shell, Overview, Live Feed, Event Intelligence, Historical Events, Watchlists, Research workspace, Alerts, Sources, System Status, Settings | Working. Responsive (desktop + mobile), with loading, empty and error states |
-| Accounts | Working. First account becomes **owner**; scrypt-hashed passwords; DB-backed sessions (hashed tokens, httpOnly cookies) |
+| Accounts | Working. First account becomes **owner**; scrypt-hashed passwords; DB-backed sessions (hashed tokens, httpOnly cookies). Optional `LOCAL_NO_LOGIN=true` skips sign-in on this computer with `npm run dev` (see [docs/SECURITY.md](docs/SECURITY.md)) |
 | Database | Working. Embedded PostgreSQL (**PGlite**) with no install; managed PostgreSQL via `DATABASE_URL` (driver implemented, **not run against a real Postgres server in this environment**) |
 | Official RSS/Atom collection | **Working and live.** Verified against the Federal Reserve, ECB, Bank of England, Bank of Canada, BEA and EIA feeds on 2026-10-08. SEC feeds wait for `SEC_USER_AGENT`. CFTC is off by default (it intermittently refuses automated requests; this is reported, never bypassed) |
 | Event pipeline | Working. Filtering → classification → entity resolution → clustering/novelty → asset mapping → verification → importance & confidence scoring → explanation, with a score audit trail |

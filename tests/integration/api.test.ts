@@ -22,9 +22,10 @@ type Handler = (req: NextRequest, ctx: { params: Promise<Record<string, string>>
 async function call(
   handler: Handler,
   path: string,
-  opts: { method?: string; body?: unknown; cookie?: string; origin?: string; contentType?: string; params?: Record<string, string> } = {},
+  opts: { method?: string; body?: unknown; cookie?: string; origin?: string; contentType?: string; params?: Record<string, string>; host?: string; forwardedFor?: string } = {},
 ) {
-  const headers = new Headers({ host: "localhost" });
+  const headers = new Headers({ host: opts.host ?? "localhost" });
+  if (opts.forwardedFor) headers.set("x-forwarded-for", opts.forwardedFor);
   if (opts.body !== undefined) headers.set("content-type", opts.contentType ?? "application/json");
   if (opts.cookie) headers.set("cookie", opts.cookie);
   if (opts.origin) headers.set("origin", opts.origin);
@@ -64,7 +65,7 @@ describe("API routes (real handlers, real database)", () => {
 
   it("reports first-run setup state publicly", async () => {
     const r = await call(setupRoute.GET as Handler, "/api/auth/setup");
-    expect(r.json.data).toEqual({ hasUsers: false, signupOpen: true });
+    expect(r.json.data).toEqual({ hasUsers: false, signupOpen: true, localMode: false });
   });
 
   it("first signup creates the owner and sets an httpOnly session cookie", async () => {
@@ -180,5 +181,54 @@ describe("API routes (real handlers, real database)", () => {
     expect(r.status).toBe(404);
     const h = await call(healthRoute.GET as Handler, "/api/health");
     expect(h.json).toEqual({ ok: true, db: true });
+  });
+});
+
+describe("local no-login mode (real handlers, real database)", () => {
+  const handles: Awaited<ReturnType<typeof setupTestDb>>[] = [];
+  const useDb = async () => {
+    const handle = await setupTestDb({ seed: true });
+    handles.push(handle);
+    (globalThis as { __signalDb?: Promise<unknown> }).__signalDb = Promise.resolve(handle);
+    return handle;
+  };
+
+  beforeAll(() => {
+    process.env.LOCAL_NO_LOGIN = "true";
+    resetEnvCache();
+  });
+  afterAll(async () => {
+    delete process.env.LOCAL_NO_LOGIN;
+    resetEnvCache();
+    (globalThis as { __signalDb?: Promise<unknown> }).__signalDb = undefined;
+    for (const h of handles) await h.close();
+  });
+  beforeEach(() => resetRateLimits());
+
+  it("opens as the existing workspace owner without signing in", async () => {
+    await useDb();
+    const signup = await call(signupRoute.POST as Handler, "/api/auth/signup", { method: "POST", body: { email: "me@test.test", password: "a-strong-password-1", displayName: "Me" } });
+    expect(signup.status).toBe(200);
+    expect((await call(setupRoute.GET as Handler, "/api/auth/setup")).json.data.localMode).toBe(true);
+    const me = await call(meRoute.GET as Handler, "/api/auth/me");
+    expect(me.status).toBe(200);
+    expect(me.json.data).toMatchObject({ localMode: true, user: { email: "me@test.test", role: "owner" } });
+    expect((await call(watchlistsRoute.GET as Handler, "/api/watchlists")).status).toBe(200);
+  });
+
+  it("creates an owner with no usable password on a fresh install", async () => {
+    await useDb();
+    const first = await call(meRoute.GET as Handler, "/api/auth/me");
+    expect(first.json.data).toMatchObject({ localMode: true, user: { email: "owner@signal-terminal.local", role: "owner" } });
+    const again = await call(meRoute.GET as Handler, "/api/auth/me");
+    expect(again.json.data.user.id).toBe(first.json.data.user.id);
+    const login = await call(loginRoute.POST as Handler, "/api/auth/login", { method: "POST", body: { email: "owner@signal-terminal.local", password: "any-password-at-all" } });
+    expect(login.status).toBe(401);
+  });
+
+  it("still requires sign-in for other devices and for pages not opened at localhost", async () => {
+    expect((await call(meRoute.GET as Handler, "/api/auth/me", { host: "192.168.1.236:3000" })).status).toBe(401);
+    expect((await call(meRoute.GET as Handler, "/api/auth/me", { host: "attacker.example" })).status).toBe(401);
+    expect((await call(meRoute.GET as Handler, "/api/auth/me", { forwardedFor: "192.168.1.50" })).status).toBe(401);
   });
 });

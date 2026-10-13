@@ -18,8 +18,10 @@ function LoginForm() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    apiFetch<{ hasUsers: boolean; signupOpen: boolean }>("/api/auth/setup")
+    apiFetch<{ hasUsers: boolean; signupOpen: boolean; localMode: boolean }>("/api/auth/setup")
       .then((s) => {
+        // Sign-in is turned off on this computer: go straight in.
+        if (s.localMode) return hardNavigate("/");
         setSetup(s);
         if (!s.hasUsers) setMode("signup");
       })

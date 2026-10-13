@@ -323,6 +323,22 @@ function DataRetention({ info }: { info: Info | undefined }) {
   );
 }
 
+function LocalModeNotice() {
+  return (
+    <Panel title="Sign-in is off on this computer">
+      <ul className="space-y-1.5 text-xs text-fg-2">
+        <li>
+          <span className="font-mono">LOCAL_NO_LOGIN=true</span> in <span className="font-mono">.env.local</span> opens the app as the workspace owner without a password.
+        </li>
+        <li>It only works with npm run dev, which listens on this computer only, and only for pages opened at localhost. Other devices on your network cannot reach the app.</li>
+        <li>
+          To require sign-in again, remove <span className="font-mono">LOCAL_NO_LOGIN</span> from <span className="font-mono">.env.local</span> and restart the app.
+        </li>
+      </ul>
+    </Panel>
+  );
+}
+
 function Security() {
   const { push } = useToasts();
   const [current, setCurrent] = useState("");
@@ -451,7 +467,7 @@ function SettingsView() {
       {tab === "scoring" && <Scoring info={info.data} />}
       {tab === "data" && <DataRetention info={info.data} />}
       {tab === "account" && <Account me={me} />}
-      {tab === "security" && <Security />}
+      {tab === "security" && (me?.localMode ? <LocalModeNotice /> : <Security />)}
     </div>
   );
 }

@@ -4,7 +4,9 @@ import { ZodError, type z } from "zod";
 import { getEnv, type Env } from "@/config/env";
 import { PRODUCT } from "@/config/product";
 import { getDb, type Db } from "@/server/db/client";
+import { localNoLoginApplies } from "@/server/auth/local-mode";
 import { validateSession, type AuthUser } from "@/server/auth/session";
+import { localOwner } from "@/server/services/users";
 import { ApiError, badRequest, forbidden, tooManyRequests, unauthorized } from "@/server/lib/errors";
 import { errorMessage, logger } from "@/server/lib/logger";
 import { checkRateLimit } from "@/server/lib/rate-limit";
@@ -96,6 +98,7 @@ export function api<P = Record<string, string>>(options: Options, handler: (ctx:
           cookieOps.push((res) => res.cookies.delete(PRODUCT.sessionCookieName));
         }
       }
+      if (!user && options.auth !== "public" && localNoLoginApplies(req.headers)) user = await localOwner(db);
       if (options.auth !== "public" && !user) throw unauthorized();
       if (options.auth === "owner" && user?.role !== "owner") throw forbidden("Only the workspace owner can do this");
 

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { PRODUCT } from "@/config/product";
+import { localNoLoginApplies } from "@/server/auth/local-mode";
 
 /**
  * Optimistic auth redirect for application pages: if there is no session
@@ -9,7 +10,7 @@ import { PRODUCT } from "@/config/product";
  */
 export function proxy(request: NextRequest) {
   const hasSession = Boolean(request.cookies.get(PRODUCT.sessionCookieName)?.value);
-  if (!hasSession) {
+  if (!hasSession && !localNoLoginApplies(request.headers)) {
     const url = request.nextUrl.clone();
     const next = request.nextUrl.pathname + request.nextUrl.search;
     url.pathname = "/login";

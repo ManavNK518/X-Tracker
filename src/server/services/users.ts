@@ -27,15 +27,7 @@ export async function signup(db: Db, env: Env, input: { email: string; password:
     .insert(users)
     .values({ email: input.email, passwordHash, displayName: input.displayName, role: isFirst ? "owner" : "member" })
     .returning();
-  await db.insert(userPreferences).values({ userId: user.id }).onConflictDoNothing();
-  // Default alert rule so new users get in-app alerts for high-priority events.
-  await db.insert(alertRules).values({
-    userId: user.id,
-    name: "High-priority events",
-    minImportance: 60,
-    minConfidence: 0,
-    channels: ["in_app"],
-  });
+  await initUserDefaults(db, user.id);
   await audit(db, { userId: user.id, action: "user.signup", entityType: "user", entityId: user.id, details: { role: user.role } });
   const session = await createSession(db, user.id, env.SESSION_TTL_DAYS);
   return { user, session };
@@ -59,7 +51,45 @@ export async function hasAnyUser(db: Db): Promise<boolean> {
   return Number(value) > 0;
 }
 
-export async function getMe(db: Db, auth: AuthUser): Promise<MeDTO> {
+async function initUserDefaults(db: Db, userId: string) {
+  await db.insert(userPreferences).values({ userId }).onConflictDoNothing();
+  // Default alert rule so new users get in-app alerts for high-priority events.
+  await db.insert(alertRules).values({
+    userId,
+    name: "High-priority events",
+    minImportance: 60,
+    minConfidence: 0,
+    channels: ["in_app"],
+  });
+}
+
+/** Stored for an owner created by local no-login mode: not a valid hash, so it can never be used to sign in. */
+const NO_PASSWORD = "!no-password:local-no-login";
+
+/**
+ * The account local no-login mode acts as: the workspace owner (the earliest
+ * owner account, else the earliest account). On a fresh install it creates an
+ * owner with no usable password.
+ */
+export async function localOwner(db: Db): Promise<AuthUser> {
+  const pick = () => db.select().from(users).orderBy(sql`${users.role} = 'owner' desc`, users.createdAt).limit(1);
+  let [user] = await pick();
+  if (!user) {
+    const [created] = await db
+      .insert(users)
+      .values({ email: "owner@signal-terminal.local", passwordHash: NO_PASSWORD, displayName: "Owner", role: "owner" })
+      .onConflictDoNothing()
+      .returning();
+    if (created) {
+      await initUserDefaults(db, created.id);
+      await audit(db, { userId: created.id, action: "user.local_owner_created", entityType: "user", entityId: created.id });
+    }
+    [user] = await pick();
+  }
+  return { id: user.id, email: user.email, displayName: user.displayName, role: user.role === "owner" ? "owner" : "member", plan: user.plan };
+}
+
+export async function getMe(db: Db, auth: AuthUser, localMode = false): Promise<MeDTO> {
   await db.insert(userPreferences).values({ userId: auth.id }).onConflictDoNothing();
   const [prefs] = await db.select().from(userPreferences).where(eq(userPreferences.userId, auth.id));
   const [{ value: unread }] = await db
@@ -68,6 +98,7 @@ export async function getMe(db: Db, auth: AuthUser): Promise<MeDTO> {
     .where(and(eq(notifications.userId, auth.id), isNull(notifications.readAt)));
   return {
     user: { id: auth.id, email: auth.email, displayName: auth.displayName, role: auth.role, plan: auth.plan },
+    localMode,
     preferences: {
       timezone: prefs.timezone,
       theme: prefs.theme,

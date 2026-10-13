@@ -159,15 +159,19 @@ function UserMenu() {
           <Link href="/settings" className="flex items-center gap-2 px-3 py-1.5 text-sm text-fg-2 hover:bg-hover hover:text-fg" onClick={() => setOpen(false)}>
             <Settings className="size-3.5" /> Settings
           </Link>
-          <button
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-fg-2 hover:bg-hover hover:text-fg"
-            onClick={async () => {
-              await apiFetch("/api/auth/logout", { method: "POST", body: {} }).catch(() => undefined);
-              hardNavigate("/login");
-            }}
-          >
-            <LogOut className="size-3.5" /> Sign out
-          </button>
+          {me?.localMode ? (
+            <p className="px-3 py-1.5 text-2xs text-fg-3">Sign-in is off on this computer.</p>
+          ) : (
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-fg-2 hover:bg-hover hover:text-fg"
+              onClick={async () => {
+                await apiFetch("/api/auth/logout", { method: "POST", body: {} }).catch(() => undefined);
+                hardNavigate("/login");
+              }}
+            >
+              <LogOut className="size-3.5" /> Sign out
+            </button>
+          )}
         </div>
       )}
     </div>
